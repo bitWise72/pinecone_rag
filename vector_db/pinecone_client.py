@@ -1,9 +1,10 @@
 # project_root/vector_db/pinecone_client.py
 from pinecone import Pinecone, Index, ServerlessSpec
 from config import PINECONE_API_KEY, PINECONE_ENVIRONMENT, PINECONE_INDEX_NAME, PINECONE_DIMENSION
-from vector_db.embedder import embedder
+from vector_db.embedder import embedder # Assumes embedder is a globally available instance
 import time
 import os
+from typing import Dict, Any, List, Optional # Import for type hinting
 
 # It's generally recommended to use environment variables for sensitive keys
 # Fallback to config if environment variables are not set, but prioritize env vars
@@ -12,8 +13,10 @@ PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", PINECONE_API_KEY)
 # We will primarily use region and cloud in ServerlessSpec
 
 class PineconeManager:
-    def __init__(self):
+    def __init__(self, embedder):
         """Initializes the Pinecone connection and gets/creates the index."""
+        self.embedder = embedder # Store embedder instance
+
         if not PINECONE_API_KEY:
             print("Pinecone API key not found. Please set PINECONE_API_KEY.")
             self.pinecone = None
@@ -21,12 +24,14 @@ class PineconeManager:
             return
 
         try:
-            # Initialize the Pinecone client with just the API key
-            # The environment is now specified per index in the spec
             self.pinecone = Pinecone(api_key=PINECONE_API_KEY)
             print("Pinecone client initialized.")
             self.index = self._get_or_create_index()
-            self.embedder = embedder  # Ensure the embedder is initialized
+            # Check if embedder was actually passed/initialized
+            if not getattr(self.embedder, 'model', None): # Check if embedder has a loaded model attribute
+                 print("Warning: Embedding model not available or not loaded. Embedder functionality in PineconeManager will be limited.")
+
+
         except Exception as e:
             print(f"Error initializing Pinecone: {e}")
             self.pinecone = None
@@ -40,87 +45,41 @@ class PineconeManager:
 
         index_name = PINECONE_INDEX_NAME
         dimension = PINECONE_DIMENSION
-        # Define serverless spec details (choose your desired cloud and region)
-        # Make sure the region is supported for Serverless indexes in your Pinecone account
-        serverless_cloud = 'aws' # Example: 'aws', 'gcp', 'azure'
-        serverless_region = 'us-east-1' # Example: 'us-east-1', 'us-west-2', etc.
+        serverless_cloud = 'aws'
+        serverless_region = 'us-east-1'
+        index_metric = 'cosine'
 
         try:
-            # Use has_index() to directly check for the existence of the index
             if self.pinecone.has_index(index_name):
                 print(f"Pinecone index '{index_name}' found. Connecting...")
-                # Optional: Add checks for dimension and spec if needed using describe_index
-                # try:
-                #     index_description = self.pinecone.describe_index(index_name)
-                #     if index_description.dimension != dimension:
-                #         print(f"WARNING: Index dimension mismatch! Config expects {dimension}, index is {index_description.dimension}.")
-                #     # Check spec - This is more complex as spec is an object
-                #     # if not (hasattr(index_description.spec, 'serverless') and
-                #     #         getattr(index_description.spec.serverless, 'cloud', None) == serverless_cloud and
-                #     #         getattr(index_description.spec.serverless, 'region', None) == serverless_region):
-                #     #      print("WARNING: Index spec mismatch! Config expects Serverless with specified cloud/region.")
-                # except Exception as describe_e:
-                #      print(f"Warning: Could not describe index '{index_name}' to verify configuration: {describe_e}")
-
-                # Return the Index object
-                
+                return self.pinecone.Index(index_name)
             else:
-                # The index does not exist
-                
+                print(f"Pinecone index '{index_name}' does not exist.")
+                print(f"Attempting to create Serverless index '{index_name}' with metric '{index_metric}'...")
+
                 self.pinecone.create_index(
                     name=index_name,
                     dimension=dimension,
-                    metric='euclidean',
+                    metric=index_metric,
                     spec= ServerlessSpec(
                         cloud=serverless_cloud,
                         region=serverless_region
-                    ))
-            # Return the Index object  
-            return self.pinecone.Index(index_name)
+                    )
+                )
+                print(f"Index '{index_name}' creation requested. Waiting for readiness...")
+                # Optional: Wait for readiness
+                # while not self.pinecone.describe_index(index_name).status['ready']:
+                #     time.sleep(5)
+                # print(f"Serverless index '{index_name}' created and ready.")
+
+                return self.pinecone.Index(index_name)
+
         except Exception as e:
-            # Catch potential errors during the has_index call or other index operations
-            print(f"Error checking/connecting to Pinecone index '{index_name}': {e}")
+            print(f"Error checking/connecting or creating Pinecone index '{index_name}': {e}")
             return None
 
-    def update_user_taste_feedback(self,user_id, ingredient, feedback):
-    # feedback: "more", "less", "perfect"
 
-        embedding = self.embedder.encode(ingredient)
-        existing_response = self.search(query_vector=embedding,
-                                     filter={"user_id": user_id})
-        #self.get_user_taste_pinecone(user_id, ingredient)
-        sorted_response = sorted(existing_response.get("matches", []), key=lambda x: x['metadata']['feedback_weight'], reverse=True)
-        existing_taste = sorted_response[0]['metadata']
-        pinecone_id=sorted_response[0]['id']
-        if not existing_taste:
-            return
-
-        # Adjust based on feedback
-        if feedback == "more":
-            new_amount = existing_taste['amount'] * 1.1  # increase 10%
-        elif feedback == "less":
-            new_amount = existing_taste['amount'] * 0.9  # decrease 10%
-        else:
-            new_amount = existing_taste['amount']  # no change
-
-        new_weight = existing_taste['feedback_weight'] + 0.5 if feedback == "perfect" else existing_taste['feedback_weight']
-
-        # Update taste
-        taste_text = f"{ingredient} {new_amount}{existing_taste['unit']} for {existing_taste['servings']} servings in {existing_taste['cuisine']} cuisine"
-        embedding = self.embedder.encode(taste_text)
-
-        self.index.upsert([
-            (pinecone_id, embedding, {
-                "user_id": user_id,
-                "ingredient": ingredient,
-                "amount": new_amount,
-                "unit": existing_taste['unit'],
-                "servings": existing_taste['servings'],
-                "cuisine": existing_taste['cuisine'],
-                "feedback_weight": new_weight
-            })
-        ])
-    def upsert_vectors(self, vectors_to_upsert, namespace=""):
+    def upsert_vectors(self, vectors_to_upsert: List[Dict[str, Any]], namespace: str = ""):
         """
         Upserts a list of vectors into the Pinecone index.
 
@@ -137,25 +96,19 @@ class PineconeManager:
             print("No vectors provided for upsert.")
             return
 
-        # Validate the format of vectors_to_upsert
         if not all(isinstance(v, dict) and "id" in v and "values" in v for v in vectors_to_upsert):
             print("Invalid upsert format. Expected list of dictionaries with 'id' and 'values'.")
-            # Print a sample of the incorrect format to help debugging
-            # print(f"Sample of provided data: {vectors_to_upsert[:2]}")
             return
 
         try:
-            # Use PINECONE_INDEX_NAME directly instead of self.index.name
             print(f"Attempting to upsert {len(vectors_to_upsert)} vectors into Pinecone index '{PINECONE_INDEX_NAME}' namespace '{namespace}'...")
-            # Upsert data. Use the 'vectors' parameter with the new dictionary format.
-            # Specify the namespace.
             upsert_response = self.index.upsert(vectors=vectors_to_upsert, namespace=namespace)
             print(f"Pinecone upsert complete. Upserted count: {upsert_response.upserted_count}")
         except Exception as e:
             print(f"Error during Pinecone upsert: {e}")
 
 
-    def search(self, query_vector, top_k=5, filter=None, namespace=""):
+    def search(self, query_vector: List[float], top_k: int = 5, filter: Optional[Dict[str, Any]] = None, namespace: str = ""):
         """
         Performs a similarity search in the Pinecone index.
 
@@ -177,15 +130,14 @@ class PineconeManager:
              return None
 
         try:
-            # Use PINECONE_INDEX_NAME directly instead of self.index.name
             print(f"Performing Pinecone search in index '{PINECONE_INDEX_NAME}' namespace '{namespace}' (top_k={top_k})...")
             search_results = self.index.query(
-                namespace=namespace, # Specify the namespace
+                namespace=namespace,
                 vector=query_vector,
                 top_k=top_k,
-                include_values=True, # Include vector values in the response if needed
-                include_metadata=True, # IMPORTANT: Include metadata to get original data back
-                filter=filter # Apply filter if provided
+                include_values=True,
+                include_metadata=True,
+                filter=filter
             )
             print("Search complete.")
             return search_results
@@ -193,29 +145,208 @@ class PineconeManager:
             print(f"Error during Pinecone search: {e}")
             return None
 
-# Create a singleton instance of the Pinecone manager
-# This instance will attempt to initialize the client and connect to the index
-pinecone_manager = PineconeManager()
+    def fetch_vector(self, pinecone_id: str, namespace: str = ""):
+        """
+        Fetches a vector by its ID from the Pinecone index.
 
-# Example usage (assuming you have vectors and a query vector):
-#
-# from vector_db.pinecone_client import pinecone_manager
-#
-# if pinecone_manager.index:
-#     # Example upsert (list of dictionaries) - ENSURE YOUR DATA IS IN THIS FORMAT
-#     vectors_to_add = [
-#         {"id": "doc1", "values": [0.1, 0.2, 0.3, ...], "metadata": {"source": "doc_a"}},
-#         {"id": "doc2", "values": [0.4, 0.5, 0.6, ...], "metadata": {"source": "doc_b"}},
-#     ]
-#     pinecone_manager.upsert_vectors(vectors_to_add, namespace="my_namespace")
-#
-#     # Example search
-#     query_vec = [0.15, 0.25, 0.35, ...] # Your query vector
-#     search_results = pinecone_manager.search(query_vec, top_k=3, namespace="my_namespace", filter={"source": "doc_a"})
-#
-#     if search_results:
-#         print("Search Results:")
-#         for match in search_results.matches:
-#             print(f"ID: {match.id}, Score: {match.score}, Metadata: {match.metadata}")
-# else:
-#     print("Pinecone manager failed to initialize or connect to the index.")
+        Args:
+            pinecone_id: The ID of the vector to fetch.
+            namespace: The namespace where the vector is stored (optional).
+
+        Returns:
+            The vector object if found (with values and metadata), otherwise None.
+        """
+        if not self.index:
+            print("Pinecone index not available for fetch.")
+            return None
+        try:
+            fetch_response = self.index.fetch(ids=[pinecone_id], namespace=namespace)
+            if pinecone_id in fetch_response.vectors:
+                return fetch_response.vectors[pinecone_id]
+            else:
+                return None
+        except Exception as e:
+            print(f"Error fetching vector ID '{pinecone_id}': {e}")
+            return None
+
+
+    # Modified update_user_taste_feedback function for similarity search + user filter
+    # This version searches by similarity (ingredient+cuisine) within the user's data,
+    # then finds the exact metadata match in the results to update.
+    # It is less reliable for finding the exact item compared to using a precise filter initially.
+    # In your PineconeManager class in vector_db/pinecone_client.py
+
+    def update_user_taste_feedback(self, user_id: str, ingredient: str, cuisine: str, feedback: str, namespace: str = "") -> str | None:
+        """
+        Finds a user taste preference by user_id and embedded ingredient (sorted by feedback_weight),
+        updates its amount/weight based on feedback, and re-upserts the vector.
+        (Uses the logic from the user's provided snippet)
+
+        Args:
+            user_id: The ID of the user.
+            ingredient: The ingredient used in the search query.
+            cuisine: The cuisine of the taste preference (used in taste_text reconstruction and metadata).
+            feedback: Feedback string ("more", "less", "perfect").
+            namespace: The namespace where the vector is stored (optional).
+
+        Returns:
+            The pinecone_id of the updated vector if successful, otherwise None.
+        """
+        if not self.index:
+            print("Pinecone index not available for update.")
+            return None
+
+        if not self.embedder:
+            print("Embedding model not available in PineconeManager. Cannot update vector.")
+            return None
+
+        valid_feedbacks = ["more", "less", "perfect"]
+        if feedback not in valid_feedbacks:
+            print(f"Invalid feedback provided: '{feedback}'. Expected one of {valid_feedbacks}.")
+            return None
+
+        try:
+            print(f"Attempting to find taste for user '{user_id}' by ingredient '{ingredient}' in namespace '{namespace}' for feedback '{feedback}'...")
+
+            # --- Step 1: Find the existing taste using a search (Based on User's Logic) ---
+            # Embed the ingredient text as the query vector
+            # Ensure .tolist() is used if embedder.encode returns numpy array
+            try:
+                embedding = self.embedder.encode(ingredient).tolist()
+            except AttributeError:
+                 embedding = self.embedder.encode(ingredient)
+                 if not isinstance(embedding, list):
+                     print(f"Warning: Embedder did not return a list or numpy array for ingredient '{ingredient}'. Cannot proceed.")
+                     return None
+
+            # Perform search filtered by user_id, using the embedded ingredient
+            existing_response = self.search(
+                query_vector=embedding,
+                filter={"user_id": user_id}, # Filter by user_id
+                namespace=namespace # Include namespace in search
+            )
+
+            # Check if search returned any matches
+            if not existing_response or not existing_response.matches:
+                print(f"No relevant taste preferences found for user '{user_id}' based on ingredient '{ingredient}'.")
+                return None
+
+            # --- Step 2: Sort results by feedback_weight and take the first match (Based on User's Logic) ---
+            # Note: This is the part that is unreliable for finding a *specific* item
+            # if a user has multiple similar entries or entries with the same feedback weight.
+            sorted_response = sorted(
+                existing_response.matches,
+                key=lambda x: x.metadata.get('feedback_weight', 1.0), # Safely get weight with default
+                reverse=True # Sort by feedback_weight descending
+            )
+
+            # Get the metadata and ID of the top-ranked result
+            existing_match = sorted_response[0]
+            existing_metadata = existing_match.metadata
+            pinecone_id_to_update = existing_match.id
+
+            # Basic check if the top match metadata is valid
+            if not existing_metadata or existing_metadata.get("amount") is None:
+                 print(f"Metadata for the top match (ID: {pinecone_id_to_update}) is missing or invalid. Cannot update.")
+                 return None
+
+
+            print(f"Top match found for user '{user_id}', ID: '{pinecone_id_to_update}'. Using this for update.")
+
+
+            # --- Step 3: Adjust amount and weight based on feedback ---
+            # Extract necessary fields from existing metadata
+            # Add type casting for safety, based on previous debugging
+            amount = existing_metadata.get("amount")
+            unit = existing_metadata.get("unit", "")
+            servings = existing_metadata.get("servings")
+            feedback_weight = existing_metadata.get("feedback_weight", 1.0) # Default value
+
+            # Attempt to cast amount and weight to float if they are not already
+            if not isinstance(amount, (int, float)):
+                 try:
+                     amount = float(amount)
+                 except (ValueError, TypeError):
+                     print(f"Warning: Could not convert amount '{amount}' to float for ID '{pinecone_id_to_update}'. Cannot update amount.")
+                     amount = existing_metadata.get("amount") # Keep original if casting fails
+
+            if not isinstance(feedback_weight, (int, float)):
+                 try:
+                     feedback_weight = float(feedback_weight)
+                 except (ValueError, TypeError):
+                     print(f"Warning: Could not convert feedback_weight '{feedback_weight}' to float for ID '{pinecone_id_to_update}'. Using default 1.0.")
+                     feedback_weight = 1.0 # Use default if casting fails
+
+
+            # Ensure amount and servings are available before calculating new_amount
+            if amount is None or servings is None:
+                 print(f"Missing or invalid required metadata fields (amount or servings) for vector ID '{pinecone_id_to_update}'. Cannot calculate new amount.")
+                 # Only proceed with weight update if amount/servings are missing
+                 new_amount = existing_metadata.get("amount") # Keep original amount if calculation cannot happen
+            else:
+                 new_amount = amount # Start with the current amount
+                 if feedback == "more":
+                     new_amount = amount * 1.1
+                 elif feedback == "less":
+                     new_amount = amount * 0.9
+                 # else: feedback == "perfect", new_amount remains the same
+
+
+            new_weight = feedback_weight # Start with current weight
+            if feedback == "perfect":
+                 new_weight = feedback_weight + 1.0 # Increase by 1.0 as per latest request
+
+            # --- Step 4: Reconstruct text, re-embed, update metadata, and upsert ---
+            # Use the ingredient and cuisine from the function arguments here,
+            # and the calculated new_amount and original unit/servings from metadata.
+            updated_taste_text = f"{ingredient} {new_amount}{unit} for {servings} servings in {cuisine} cuisine"
+
+            # Re-embed the updated text
+            try:
+                updated_embedding = self.embedder.encode(updated_taste_text).tolist()
+            except AttributeError:
+                 updated_embedding = self.embedder.encode(updated_taste_text)
+                 if not isinstance(updated_embedding, list):
+                     print(f"Warning: Embedder did not return a list or numpy array for updated text. Cannot re-embed.")
+                     return None
+
+            # Prepare updated metadata - Update specific fields while keeping others from the original match
+            updated_metadata = existing_metadata.copy()
+            updated_metadata.update({
+                "amount": new_amount, # Use the calculated new amount
+                "feedback_weight": new_weight, # Use the calculated new weight
+                "original_text": updated_taste_text, # Update original text
+                # Ensure other essential fields are present, even if they weren't changed
+                "user_id": user_id, # Use the user_id from function argument for certainty
+                "ingredient": ingredient, # Use ingredient from function argument for certainty
+                "cuisine": cuisine # Use cuisine from function argument for certainty
+            })
+
+            # Prepare data for upsert (using the correct dictionary format) - list containing one vector
+            vector_to_upsert = {
+                "id": pinecone_id_to_update, # Use the ID of the found match
+                "values": updated_embedding,
+                "metadata": updated_metadata
+            }
+
+            # --- Step 5: Upsert the updated vector ---
+            print(f"Upserting updated vector for ID '{pinecone_id_to_update}' in namespace '{namespace}'...")
+            # Upsert the list containing the single vector dictionary
+            upsert_response = self.index.upsert(vectors=[vector_to_upsert], namespace=namespace)
+            print(f"Pinecone update for ID '{pinecone_id_to_update}' complete. Upserted count: {upsert_response.upserted_count}")
+
+            if upsert_response.upserted_count > 0:
+                 print(f"Vector '{pinecone_id_to_update}' updated successfully.")
+                 return pinecone_id_to_update # Return the ID on success
+            else:
+                 print(f"Vector '{pinecone_id_to_update}' was not updated (might indicate an issue).")
+                 return None # Return None if upsert count is 0
+
+        except Exception as e:
+            print(f"Error updating taste feedback for user '{user_id}', ingredient '{ingredient}', cuisine '{cuisine}': {e}")
+            # Consider adding more specific error logging based on the type of exception
+            return None # Return None on exception
+
+
+# Remove the singleton instance creation here.
+# pinecone_manager = PineconeManager()
