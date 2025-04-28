@@ -3,36 +3,39 @@ import json
 import os
 
 # Import your project modules
-# Make sure these files are included in your Lambda deployment package
+# These files must be included in your Lambda deployment package
 from vector_db.embedder import embedder
 from vector_db.pinecone_client import PineconeManager
 from utils.prompt_builder import build_prompt_augmentation
-
-# --- Configuration from Environment Variables ---
-# Access Pinecone and other sensitive configs from environment variables
-# Set these in the Lambda function's configuration settings in AWS Console
-# PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY") # PineconeManager gets this internally now
-# PINECONE_INDEX_NAME = os.environ.get("PINECONE_INDEX_NAME") # PineconeManager gets this internally now
-# ... other configs like MongoDB connection string if needed elsewhere ...
+# config is implicitly available or can be imported if needed directly
+# from config import ...
 
 # --- Initialize components outside the handler ---
 # This runs once per Lambda execution environment (potentially across multiple invocations)
+# This helps reduce latency on subsequent requests (warm starts)
 pinecone_manager = None
 is_initialized = False
 initialization_error = None
 
 try:
-    # Assumes embedder initialization happens efficiently on import or call
-    # Handle potential large model loading here or in a separate service
+    print("Lambda function initializing...")
+    # Initialize PineconeManager and Embedder
+    # **IMPORTANT:** Large embedding model loading happens here.
+    # This can take time and consume memory, leading to cold start latency.
+    # Consider alternatives for the embedding model if this is too slow/large.
     pinecone_manager = PineconeManager(embedder=embedder)
     is_initialized = True
-    print("Lambda environment initialized successfully.")
+    print("Lambda function initialized successfully.")
 except Exception as e:
-    print(f"Lambda initialization failed: {e}")
-    is_initialized = False
+    print(f"Lambda function initialization failed: {e}")
+    # Store the error to report it on subsequent requests
     initialization_error = str(e)
+    is_initialized = False # Ensure flag is False
 
-# --- Lambda Handler Function ---
+
+# --- AWS Lambda Handler Function ---
+# This function is the entry point for Lambda invocations (triggered by API Gateway etc.)
+# The function name is conventionally 'lambda_handler'
 def lambda_handler(event, context):
     # Check if initialization was successful
     if not is_initialized:
@@ -43,14 +46,13 @@ def lambda_handler(event, context):
             'body': json.dumps({'error': 'Service failed to initialize', 'details': initialization_error})
         }
 
-    # Ensure Pinecone index is ready before searching
+    # Ensure Pinecone index and embedder are ready (double-check after init)
     if not pinecone_manager.index:
          return {
             'statusCode': 500,
              'headers': { 'Content-Type': 'application/json' },
             'body': json.dumps({'error': 'Pinecone index not available'})
          }
-    # Ensure embedder is ready
     if not pinecone_manager.embedder:
          return {
             'statusCode': 500,
@@ -58,42 +60,36 @@ def lambda_handler(event, context):
             'body': json.dumps({'error': 'Embedding model not available'})
          }
 
-
     # --- Parse Request Input ---
-    # Adapt this based on how your API Gateway is configured (e.g., GET query params, POST JSON body)
+    # AWS Lambda event structure from API Gateway (Proxy Integration) is similar to Vercel's event
+    # Expecting a POST request with a JSON body like:
+    # { "user_id": "...", "cuisine": "...", "ingredients": ["...", "..."] }
     try:
-        user_id = None
-        query_text = None
-        cuisine = None # Assuming cuisine might be needed for precise query embedding/filtering
-
-        if event.get('httpMethod') == 'GET':
-             query_params = event.get('queryStringParameters', {})
-             user_id = query_params.get('user_id')
-             query_text = query_params.get('query_text')
-             cuisine = query_params.get('cuisine') # Example
-        elif event.get('httpMethod') == 'POST':
-             request_body = json.loads(event.get('body', '{}'))
+        if event.get('httpMethod') == 'POST' and event.get('body'):
+             # The body comes as a JSON string, need to parse it
+             request_body = json.loads(event['body'])
              user_id = request_body.get('user_id')
-             query_text = request_body.get('query_text')
-             cuisine = request_body.get('cuisine') # Example
+             cuisine = request_body.get('cuisine')
+             ingredient_list = request_body.get('ingredients') # Expecting a list
         else:
              return {
                 'statusCode': 400,
                 'headers': { 'Content-Type': 'application/json' },
-                'body': json.dumps({'error': 'Unsupported HTTP method'})
+                'body': json.dumps({'error': 'Unsupported method or missing request body. Expecting POST with JSON body.'})
              }
 
         # Basic input validation
-        if not user_id or not query_text:
+        if not user_id or not cuisine or not isinstance(ingredient_list, list) or not ingredient_list:
             return {
                 'statusCode': 400,
                  'headers': { 'Content-Type': 'application/json' },
-                'body': json.dumps({'error': 'Missing required parameters: user_id and query_text'})
+                'body': json.dumps({'error': 'Missing or invalid required parameters. Expecting user_id (string), cuisine (string), and ingredients (non-empty list of strings).'})
             }
 
-        print(f"Received request for User ID: {user_id}, Query: '{query_text}'")
+        print(f"Received request for User ID: {user_id}, Cuisine: '{cuisine}', Ingredients: {ingredient_list}")
 
     except json.JSONDecodeError:
+         print("Error decoding JSON body.")
          return {
              'statusCode': 400,
               'headers': { 'Content-Type': 'application/json' },
@@ -108,53 +104,74 @@ def lambda_handler(event, context):
          }
 
 
-    # --- Perform Search ---
-    try:
-        # Embed the query text
-        # If using a separate embedding service, call it here
-        query_vector = pinecone_manager.embedder.encode(query_text).tolist()
+    # --- Process Each Ingredient and Perform Search ---
+    augmented_prompts_list = [] # List to store results in order
+    errors = [] # Collect any errors during processing individual ingredients
 
-        # Define the filter based on user_id (and potentially other criteria if needed)
-        search_filter = {"user_id": user_id} # Assuming user_id metadata is string
+    for i, ingredient in enumerate(ingredient_list):
+        if not isinstance(ingredient, str) or not ingredient.strip():
+             print(f"Skipping invalid ingredient at index {i}: '{ingredient}'")
+             augmented_prompts_list.append(f"Error: Invalid ingredient at index {i}") # Indicate error in the list
+             continue
 
-        # Perform search in Pinecone (default namespace)
-        search_results = pinecone_manager.search(query_vector, top_k=5, filter=search_filter) # Add namespace if using
+        try:
+            print(f"Processing ingredient '{ingredient}' for user '{user_id}', cuisine '{cuisine}'...")
 
-        # --- Process Results and Build Prompt ---
-        prompt_augmentation_string = ""
-        if search_results and search_results.matches:
-             prompt_augmentation_string = build_prompt_augmentation(search_results)
-        # else: prompt_augmentation_string remains empty
+            # Embed the query text for the current ingredient and cuisine
+            query_text = f"{ingredient} {cuisine} cuisine taste" # Adapt query text as needed
+            try:
+                query_vector = pinecone_manager.embedder.encode(query_text).tolist()
+            except AttributeError: # Handle case where embedder might return list directly
+                 query_vector = pinecone_manager.embedder.encode(query_text)
+                 if not isinstance(query_vector, list):
+                     print(f"Warning: Embedder did not return a list or numpy array for '{query_text}'. Skipping search.")
+                     augmented_prompts_list.append(f"Error embedding ingredient '{ingredient}'")
+                     continue # Skip search if embedding failed
 
-        # --- Return Response ---
-        return {
-            'statusCode': 200,
-            'headers': { # Important for CORS if frontend is on a different domain
-                'Content-Type': 'application/json',
-                # Example CORS headers (adjust as needed)
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Headers': 'Content-Type',
-                'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
-            },
-            'body': json.dumps({
-                'user_id': user_id,
-                'query_text': query_text,
-                'augmented_prompt': prompt_augmentation_string,
-                'search_matches_count': len(search_results.matches) if search_results else 0,
-                # Optionally include some search results metadata for debugging/frontend display
-                # 'search_results_preview': [{'id': m.id, 'score': m.score, 'metadata': m.metadata} for m in search_results.matches] if search_results and search_results.matches else []
-            })
-        }
+            # Define the filter based on user_id (and potentially cuisine if you want to filter more)
+            search_filter = {"user_id": user_id} # Assuming user_id metadata is string
+            # If you want to filter by cuisine during search: search_filter = {"user_id": user_id, "cuisine": cuisine}
 
-    except Exception as e:
-        print(f"Error during Pinecone search or prompt building: {e}")
-        return {
-            'statusCode': 500,
-             'headers': { # Include CORS headers even on error if needed
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Headers': 'Content-Type',
-                'Access-Control-Allow-Methods': 'OPTIONS,POST,GET'
-             },
-            'body': json.dumps(f"An internal error occurred during search: {str(e)}")
-        }
+            # Perform search in Pinecone (default namespace)
+            # Using search method that expects query_vector (list[float]) and filter
+            search_results = pinecone_manager.search(query_vector, top_k=5, filter=search_filter) # Add namespace if using
+
+            # Process Search Results and Build Prompt
+            prompt_augmentation_string = ""
+            if search_results and search_results.matches:
+                 prompt_augmentation_string = build_prompt_augmentation(search_results)
+            # else: prompt_augmentation_string remains empty
+
+            # Append the result for this ingredient to the list
+            augmented_prompts_list.append(prompt_augmentation_string)
+
+        except Exception as e:
+            print(f"Error processing ingredient '{ingredient}' for user '{user_id}': {e}")
+            errors.append(f"Error processing '{ingredient}': {str(e)}")
+            augmented_prompts_list.append(f"Error processing '{ingredient}'") # Indicate error in the list for this item
+
+    # --- Return Response ---
+    # Return a list of augmented prompts matching the order of input ingredients
+    response_body = {
+        'user_id': user_id,
+        'cuisine': cuisine,
+        'ingredients_processed': ingredient_list,
+        'augmented_prompts': augmented_prompts_list,
+        'status': 'success' if not errors else ('partial_success' if len(errors) < len(ingredient_list) else 'failure'),
+        'errors': errors
+    }
+
+    # Include CORS headers if needed (adjust Access-Control-Allow-Origin)
+    headers = {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*', # Be specific about your frontend domain in production
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Allow-Methods': 'OPTIONS,POST'
+    }
+
+    # AWS Lambda expects the 'body' to be a JSON string
+    return {
+        'statusCode': 200 if not errors else (207 if len(errors) < len(ingredient_list) else 500), # 207 Multi-Status for partial success
+        'headers': headers,
+        'body': json.dumps(response_body)
+    }
