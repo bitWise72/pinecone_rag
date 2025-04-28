@@ -172,6 +172,10 @@ def main():
                  print("\nSearch returned results object, but no matches found for the specified user and query.")
             else:
                 print("\nSearch failed or returned no results object.")
+                
+            # test the update tastes function
+            pinecone_manager.update_user_taste_feedback(user_id=user_id_to_search, ingredient="red pepper flakes", feedback="more")
+            print("updated")
 
 
         except Exception as e:

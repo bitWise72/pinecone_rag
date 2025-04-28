@@ -1,6 +1,7 @@
 # project_root/vector_db/pinecone_client.py
 from pinecone import Pinecone, Index, ServerlessSpec
 from config import PINECONE_API_KEY, PINECONE_ENVIRONMENT, PINECONE_INDEX_NAME, PINECONE_DIMENSION
+from vector_db.embedder import embedder
 import time
 import os
 
@@ -25,6 +26,7 @@ class PineconeManager:
             self.pinecone = Pinecone(api_key=PINECONE_API_KEY)
             print("Pinecone client initialized.")
             self.index = self._get_or_create_index()
+            self.embedder = embedder  # Ensure the embedder is initialized
         except Exception as e:
             print(f"Error initializing Pinecone: {e}")
             self.pinecone = None
@@ -61,46 +63,63 @@ class PineconeManager:
                 #      print(f"Warning: Could not describe index '{index_name}' to verify configuration: {describe_e}")
 
                 # Return the Index object
-                return self.pinecone.Index(index_name)
+                
             else:
                 # The index does not exist
-                print(f"Pinecone index '{index_name}' does not exist.")
-                print(f"To use this application, please create a Pinecone index manually via the Pinecone console with the following configuration:")
-                print(f"- Index Name: {index_name}")
-                print(f"- Index Type: Serverless")
-                print(f"- Cloud: {serverless_cloud}")
-                print(f"- Region: {serverless_region}")
-                print(f"- Dimension: {dimension}")
-                print(f"- Metric: cosine (or the metric you intend to use)")
-
-                # You can uncomment and use the code below if you want the script to attempt creation
-                # Be aware that index creation can take some time.
-                # try:
-                #     print(f"Attempting to create Serverless index '{index_name}'...")
-                #     self.pinecone.create_index(
-                #         name=index_name,
-                #         dimension=dimension,
-                #         metric="cosine", # Ensure this matches your intended metric
-                #         spec=ServerlessSpec(cloud=serverless_cloud, region=serverless_region)
-                #     )
-                #     print(f"Index '{index_name}' creation requested. Waiting for readiness...")
-                #     # Wait for readiness
-                #     while not self.pinecone.describe_index(index_name).status['ready']:
-                #         time.sleep(5) # Wait a bit longer
-                #     print(f"Serverless index '{index_name}' created and ready.")
-                #     return self.pinecone.Index(index_name)
-                # except Exception as create_e:
-                #     print(f"Error during Serverless index creation attempt: {create_e}")
-                #     print("Please create the index manually as instructed above.")
-                #     return None
-
-                return None # Return None if the index wasn't found/created by the script
-
+                
+                self.pinecone.create_index(
+                    name=index_name,
+                    dimension=dimension,
+                    metric='euclidean',
+                    spec= ServerlessSpec(
+                        cloud=serverless_cloud,
+                        region=serverless_region
+                    ))
+            # Return the Index object  
+            return self.pinecone.Index(index_name)
         except Exception as e:
             # Catch potential errors during the has_index call or other index operations
             print(f"Error checking/connecting to Pinecone index '{index_name}': {e}")
             return None
 
+    def update_user_taste_feedback(self,user_id, ingredient, feedback):
+    # feedback: "more", "less", "perfect"
+
+        embedding = self.embedder.encode(ingredient)
+        existing_response = self.search(query_vector=embedding,
+                                     filter={"user_id": user_id})
+        #self.get_user_taste_pinecone(user_id, ingredient)
+        sorted_response = sorted(existing_response.get("matches", []), key=lambda x: x['metadata']['feedback_weight'], reverse=True)
+        existing_taste = sorted_response[0]['metadata']
+        pinecone_id=sorted_response[0]['id']
+        if not existing_taste:
+            return
+
+        # Adjust based on feedback
+        if feedback == "more":
+            new_amount = existing_taste['amount'] * 1.1  # increase 10%
+        elif feedback == "less":
+            new_amount = existing_taste['amount'] * 0.9  # decrease 10%
+        else:
+            new_amount = existing_taste['amount']  # no change
+
+        new_weight = existing_taste['feedback_weight'] + 0.5 if feedback == "perfect" else existing_taste['feedback_weight']
+
+        # Update taste
+        taste_text = f"{ingredient} {new_amount}{existing_taste['unit']} for {existing_taste['servings']} servings in {existing_taste['cuisine']} cuisine"
+        embedding = self.embedder.encode(taste_text)
+
+        self.index.upsert([
+            (pinecone_id, embedding, {
+                "user_id": user_id,
+                "ingredient": ingredient,
+                "amount": new_amount,
+                "unit": existing_taste['unit'],
+                "servings": existing_taste['servings'],
+                "cuisine": existing_taste['cuisine'],
+                "feedback_weight": new_weight
+            })
+        ])
     def upsert_vectors(self, vectors_to_upsert, namespace=""):
         """
         Upserts a list of vectors into the Pinecone index.
