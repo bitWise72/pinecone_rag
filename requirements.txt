@@ -1,0 +1,4 @@
+pymongo             # MongoDB driver
+pinecone            # Pinecone Python client (updated package name)
+sentence-transformers # For generating embeddings
+python-dotenv       # To load environment variables from .env
