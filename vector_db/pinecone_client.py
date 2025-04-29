@@ -108,15 +108,24 @@ class PineconeManager:
             print(f"Error during Pinecone upsert: {e}")
 
 
-    def search(self, query_vector: List[float], top_k: int = 5, filter: Optional[Dict[str, Any]] = None, namespace: str = ""):
+    def search(self, query_vector: List[float], top_k: int = 5,
+               user_id: Optional[str] = None, ingredient: Optional[str] = None,
+               filter: Optional[Dict[str, Any]] = None, namespace: str = "",
+               min_score: Optional[float] = None): # Added min_score parameter
         """
         Performs a similarity search in the Pinecone index.
+        Filters by user_id and ingredient metadata *before* similarity search.
+        Only returns matches with a similarity score at or above min_score.
 
         Args:
             query_vector: The vector embedding of the query (list[float]).
             top_k: The number of nearest neighbors to retrieve.
-            filter: A dictionary for metadata filtering (e.g., {"user_id": "user123"}).
+            user_id: Optional user ID to filter results by exact metadata match.
+            ingredient: Optional ingredient name to filter results by exact metadata match.
+            filter: An optional dictionary for additional metadata filtering.
+                    If user_id and ingredient are provided, this filter is combined.
             namespace: The namespace to search within (optional, defaults to "" for default namespace).
+            min_score: Optional minimum similarity score for results. Matches below this score are excluded.
 
         Returns:
             The search results object from Pinecone, or None if an error occurs.
@@ -129,44 +138,54 @@ class PineconeManager:
              print("Invalid query vector format. Expected list[float].")
              return None
 
+        # --- Construct the effective filter ---
+        # Combine user_id and ingredient filtering with any additional filter provided
+        effective_filter = {}
+
+        if user_id is not None:
+            effective_filter["user_id"] = user_id
+            print(f"Adding user_id='{user_id}' to filter.")
+
+        if ingredient is not None:
+            effective_filter["ingredient"] = ingredient
+            print(f"Adding ingredient='{ingredient}' to filter.")
+            # Note: If you need case-insensitive ingredient match, you might need to store
+            # a lowercased version in metadata or use Pinecone's text matching features if available/suitable.
+            # Assuming exact string match for now.
+
+        # If an additional filter dictionary was provided, combine it
+        if filter is not None:
+             if effective_filter: # If we already added user_id/ingredient filters
+                  # Combine existing filters with the provided filter using $and
+                  effective_filter = {"$and": [effective_filter, filter]}
+                  print("Combining user_id/ingredient filter with additional filter.")
+             else:
+                  # If no user_id/ingredient filters, just use the provided filter
+                  effective_filter = filter
+                  print("Using only the provided filter dictionary.")
+
+        # If effective_filter is still empty, set to None for the query call
+        if not effective_filter:
+             effective_filter = None
+             print("No filter applied.")
+
+
         try:
-            print(f"Performing Pinecone search in index '{PINECONE_INDEX_NAME}' namespace '{namespace}' (top_k={top_k})...")
+            print(f"Performing Pinecone search in index '{PINECONE_INDEX_NAME}' namespace '{namespace}' (top_k={top_k}, min_score={min_score})...")
+            # The filter is applied by Pinecone *before* the similarity search
             search_results = self.index.query(
-                namespace=namespace,
+                namespace=namespace, # Specify the namespace
                 vector=query_vector,
                 top_k=top_k,
                 include_values=True,
                 include_metadata=True,
-                filter=filter
+                filter=effective_filter, # Pass the constructed effective filter here
+                min_score=min_score # Pass the min_score parameter here
             )
             print("Search complete.")
             return search_results
         except Exception as e:
             print(f"Error during Pinecone search: {e}")
-            return None
-
-    def fetch_vector(self, pinecone_id: str, namespace: str = ""):
-        """
-        Fetches a vector by its ID from the Pinecone index.
-
-        Args:
-            pinecone_id: The ID of the vector to fetch.
-            namespace: The namespace where the vector is stored (optional).
-
-        Returns:
-            The vector object if found (with values and metadata), otherwise None.
-        """
-        if not self.index:
-            print("Pinecone index not available for fetch.")
-            return None
-        try:
-            fetch_response = self.index.fetch(ids=[pinecone_id], namespace=namespace)
-            if pinecone_id in fetch_response.vectors:
-                return fetch_response.vectors[pinecone_id]
-            else:
-                return None
-        except Exception as e:
-            print(f"Error fetching vector ID '{pinecone_id}': {e}")
             return None
 
 

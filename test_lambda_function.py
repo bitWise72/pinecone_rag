@@ -17,15 +17,16 @@ except ImportError:
     print("Adjust the import statement in test_lambda_locally.py if needed.")
     lambda_handler = None # Set to None if import fails
 
-def simulate_api_gateway_event(user_id: str, cuisine: str, ingredients: list[str]) -> dict:
+def simulate_api_gateway_event(user_id: str, cuisine: str, ingredients: list[str], servings: int) -> dict:
     """
     Simulates the structure of an AWS API Gateway Proxy Integration event
-    for a POST request with a JSON body.
+    for a POST request with a JSON body, including servings.
 
     Args:
         user_id: The user ID string.
         cuisine: The cuisine string.
         ingredients: A list of ingredient strings.
+        servings: The desired number of servings (integer).
 
     Returns:
         A dictionary mimicking the API Gateway event structure.
@@ -34,7 +35,8 @@ def simulate_api_gateway_event(user_id: str, cuisine: str, ingredients: list[str
     request_body_dict = {
         "user_id": user_id,
         "cuisine": cuisine,
-        "ingredients": ingredients
+        "ingredients": ingredients,
+        "servings": servings # Include servings in the request body
     }
     request_body_json_string = json.dumps(request_body_dict)
 
@@ -78,17 +80,30 @@ def main():
     cuisine_input = input("Enter Cuisine: ")
     # Ask for ingredients as a comma-separated list
     ingredients_input_str = input("Enter Ingredients (comma-separated, e.g., 'chicken, rice, beans'): ")
+    # Ask for desired servings
+    servings_input_str = input("Enter Desired Servings (integer): ")
 
     # Split the comma-separated string into a list
     ingredient_list_input = [item.strip() for item in ingredients_input_str.split(',') if item.strip()]
+
+    # Attempt to convert servings input to an integer
+    try:
+        servings_input = int(servings_input_str)
+        if servings_input <= 0:
+             print("\nError: Servings must be a positive integer.")
+             return
+    except ValueError:
+        print("\nError: Invalid input for Servings. Please enter an integer.")
+        return
+
 
     if not user_id_input or not cuisine_input or not ingredient_list_input:
         print("\nError: User ID, Cuisine, and at least one Ingredient are required.")
         return
 
     print("\n--- Simulating API Gateway Event ---")
-    # Simulate the event structure
-    event = simulate_api_gateway_event(user_id_input, cuisine_input, ingredient_list_input)
+    # Simulate the event structure, including servings
+    event = simulate_api_gateway_event(user_id_input, cuisine_input, ingredient_list_input, servings_input)
 
     # Create a dummy context object (often not used in simple handlers, but required by signature)
     context = MagicMock()

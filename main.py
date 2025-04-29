@@ -1,12 +1,15 @@
 # project_root/main.py
-# Removed MongoDB imports: get_mongo_client, get_user_taste_data
+import json # Needed for potential future use or if prompt_builder uses it, though not strictly for input parsing here
+import os # Needed for config
+
+# Import your project modules
 from vector_db.embedder import embedder # Make sure embedder instance is imported
 from vector_db.pinecone_client import PineconeManager # Import the class
 from utils.prompt_builder import build_prompt_augmentation
-from config import PINECONE_DIMENSION, PINECONE_INDEX_NAME
-# Removed ObjectId import as it's mainly for MongoDB interaction now
+from config import PINECONE_DIMENSION, PINECONE_INDEX_NAME # Used in PineconeManager init, not directly here
 
 # Initialize PineconeManager with the embedder instance AFTER embedder is available
+# This runs once when the script starts
 pinecone_manager = PineconeManager(embedder=embedder)
 
 def main():
@@ -18,127 +21,119 @@ def main():
         # The pinecone_manager already prints detailed errors during init and index connection
         return
 
-    # Removed: --- Step 1: Load data from MongoDB ---
-    # Removed: --- Step 2: Prepare data for Pinecone (Embed and Format) ---
-    # Removed: --- Step 3: Upsert data into Pinecone ---
-    # These steps are now in ingest_data.py
-
-
-    # --- Step 4: Perform a Similarity Search ---
-    print("\n--- Performing Similarity Search ---")
-
-    # Check if embedder is available in the manager
+    # Ensure embedder is available in the manager
     if not pinecone_manager.embedder:
-           print("Embedding model not available in PineconeManager. Cannot perform search query embedding. Skipping search.")
-    elif not pinecone_manager.index:
-           print("Pinecone index not initialized. Cannot perform search. Skipping search.")
-    else:
+        print("Embedding model not available in PineconeManager. Cannot perform search query embedding. Exiting.")
+        return
+
+    print("--- Personalized Ingredient Quantity Recommendation ---")
+    print("Enter details to get recommendations based on your taste history.")
+
+    # --- Get User Input ---
+    user_id_input = input("Enter your User ID: ")
+    cuisine_input = input("Enter the Cuisine you are interested in: ")
+    # Ask for ingredients as a comma-separated list
+    ingredients_input_str = input("Enter Ingredients you are using (comma-separated, e.g., 'chicken, rice, beans'): ")
+    # Ask for desired servings
+    servings_input_str = input("Enter Desired Servings (integer): ")
+
+    # Split the comma-separated string into a list
+    ingredient_list_input = [item.strip() for item in ingredients_input_str.split(',') if item.strip()]
+
+    # Attempt to convert servings input to an integer
+    try:
+        servings_input = int(servings_input_str)
+        if servings_input <= 0:
+             print("\nError: Servings must be a positive integer.")
+             return
+    except ValueError:
+        print("\nError: Invalid input for Servings. Please enter an integer.")
+        return
+
+    # Basic validation for required inputs
+    if not user_id_input or not cuisine_input or not ingredient_list_input:
+        print("\nError: User ID, Cuisine, and at least one Ingredient are required.")
+        return
+
+    print("\n--- Processing Ingredients ---")
+
+    # --- Process Each Ingredient and Perform Search ---
+    augmented_prompts_list = [] # List to store results for each ingredient
+    errors = [] # Collect any errors during processing individual ingredients
+
+    # Define the minimum similarity score for this search (adjust as needed)
+    MINIMUM_SIMILARITY_SCORE = 0.7
+
+    for i, ingredient in enumerate(ingredient_list_input):
+        # Basic validation for each ingredient in the list
+        if not isinstance(ingredient, str) or not ingredient.strip():
+             print(f"Skipping invalid ingredient at index {i}: '{ingredient}'")
+             augmented_prompts_list.append(f"Error: Invalid ingredient at index {i}")
+             continue
+
         try:
-            user_id_to_search = input("Enter the User ID to search preferences for: ")
-            query_text = input("Enter the query text (e.g., 'making pasta with a fresh tomato sauce'): ")
+            print(f"Processing ingredient '{ingredient}' for user '{user_id_input}', cuisine '{cuisine_input}'...")
 
-            if not user_id_to_search or not query_text:
-                print("User ID and query text are required for search. Skipping search.")
-                # No return here, allows proceeding to the update section if user wants to test it directly with known criteria
-            else:
-                # Using PINECONE_INDEX_NAME directly in print statement
-                print(f"\nSearching Pinecone index '{PINECONE_INDEX_NAME}' for preferences for user '{user_id_to_search}' related to '{query_text}'")
-
-                # Embed the query text using the embedder instance from the manager
+            # Embed the query text for the current ingredient and cuisine
+            # Keep the query text broad to find related preferences within the user/cuisine
+            query_text = f"{ingredient} {cuisine_input} cuisine taste"
+            try:
                 # Ensure .tolist() is used ONLY if pinecone_manager.embedder.encode returns a numpy array.
-                # Added error handling for AttributeError if it's already a list.
-                try:
-                    query_vector = pinecone_manager.embedder.encode(query_text).tolist()
-                except AttributeError:
-                     query_vector = pinecone_manager.embedder.encode(query_text)
-                     if not isinstance(query_vector, list):
-                         print(f"Warning: Embedder did not return a list or numpy array for query. Cannot proceed with search.")
-                         query_vector = None # Ensure query_vector is None if invalid
+                query_vector = pinecone_manager.embedder.encode(query_text).tolist()
+            except AttributeError: # Handle case where embedder might return list directly
+                 query_vector = pinecone_manager.embedder.encode(query_text)
+                 if not isinstance(query_vector, list):
+                     print(f"Warning: Embedder did not return a list or numpy array for '{query_text}'. Skipping search.")
+                     augmented_prompts_list.append(f"Error embedding ingredient '{ingredient}'")
+                     continue # Skip search if embedding failed
 
+            # --- Call the search method, passing user_id, ingredient, and min_score ---
+            # The search method in PineconeManager should now filter by user_id AND ingredient metadata
+            # and apply the min_score threshold.
+            # Using the search method from the 'pinecone_client_search_final_fix' immersive
+            search_results = pinecone_manager.search(
+                query_vector=query_vector,
+                top_k=5, # Retrieve up to 5 matches for this ingredient/user (after filtering/thresholding)
+                user_id=user_id_input,       # Pass the user_id for filtering
+                ingredient=ingredient, # Pass the current ingredient for filtering
+                min_score=MINIMUM_SIMILARITY_SCORE # Pass the minimum score threshold
+                # namespace="" # Add namespace if using
+            )
+            # --- End of search call ---
 
-                if query_vector: # Only proceed with search if embedding was successful
-                    # Define the filter to search only within the specific user's data
-                    search_filter = {"user_id": user_id_to_search} # Ensure user_id in metadata is stored as string
+            # --- Process Filtered and Thresholded Matches and Build Prompt ---
+            # build_prompt_augmentation expects a list of matches, queried ingredient, AND user servings
+            # Get the matches list from the search_results object, handling None/missing attribute
+            filtered_and_thresholded_matches = search_results.matches if search_results and hasattr(search_results, 'matches') and search_results.matches is not None else []
 
-                    # Perform the search in Pinecone
-                    # Add namespace if you used one for upserting
-                    search_results = pinecone_manager.search(query_vector, top_k=5, filter=search_filter) # Searching default namespace
+            # Pass the list of matches (already filtered by Pinecone), queried ingredient, and user_servings_int
+            # build_prompt_augmentation will use only the top match from filtered_and_thresholded_matches
+            prompt_augmentation_string = build_prompt_augmentation(filtered_and_thresholded_matches, ingredient, servings_input)
 
-                    # --- Step 5: Process Search Results and Build Prompt Augmentation String ---
-                    if search_results and search_results.matches:
-                        print("\n--- Search Results Found ---")
-                        # Store matches in a list for easier access during update
-                        search_matches = search_results.matches
-                        for i, match in enumerate(search_matches):
-                             original_text = match.metadata.get("original_text", "N/A")
-                             # Print index number for user to select for feedback
-                             # Print the key identifying metadata for the user to choose
-                             user_id_meta = match.metadata.get("user_id", "N/A")
-                             ingredient_meta = match.metadata.get("ingredient", "N/A")
-                             cuisine_meta = match.metadata.get("cuisine", "N/A")
-                             amount_meta = match.metadata.get("amount", "N/A") # Include amount for context
-                             unit_meta = match.metadata.get("unit", "")
-
-                             print(f"  Match {i+1}: User ID: {user_id_meta}, Ingredient: {ingredient_meta}, Cuisine: {cuisine_meta}, Amount: {amount_meta}{unit_meta}, Score: {match.score}, ID: {match.id}, Original Text: {original_text}")
-
-
-                        print("\n--- Building Prompt Augmentation String ---")
-                        prompt_augmentation_string = build_prompt_augmentation(search_results)
-                        print("Generated Prompt Augmentation String:")
-                        print(prompt_augmentation_string)
-
-                        # --- Step 6: Demonstrate augmenting a prompt ---
-                        base_system_prompt = "You are a helpful recipe assistant. Provide recipes in Markdown format."
-                        modified_system_prompt = f"{base_system_prompt}\n\nUser Preferences (from vector search):\n{prompt_augmentation_string}"
-                        print("\n--- Example Modified System Prompt ---")
-                        print(modified_system_prompt)
-
-                        # --- Step 7: Test Update Functionality ---
-                        print("\n--- Testing Update Functionality (Optional) ---")
-                        update_choice = input("Do you want to provide feedback on a search result? (yes/no): ").lower()
-                        if update_choice == 'yes':
-                            try:
-                                match_index_to_update = 0
-                                if 0 <= match_index_to_update < len(search_matches):
-                                    # Get the metadata from the selected match to pass to the update function
-                                    selected_match_metadata = search_matches[match_index_to_update].metadata
-
-                                    # Ensure the required metadata is available
-                                    update_user_id = selected_match_metadata.get("user_id")
-                                    update_ingredient = selected_match_metadata.get("ingredient")
-                                    update_cuisine = selected_match_metadata.get("cuisine")
-
-                                    if not all([update_user_id, update_ingredient, update_cuisine]):
-                                         print("Missing required metadata in the selected match to perform update.")
-                                    else:
-                                        feedback_input = input("Enter feedback ('more', 'less', 'perfect'): ").lower()
-                                        # Ensure valid feedback is provided in update_user_taste_feedback itself
-
-                                        # Call the update function with user_id, ingredient, cuisine, feedback
-                                        # Add namespace if you are using one
-                                        pinecone_manager.update_user_taste_feedback(
-                                            user_id=update_user_id,
-                                            ingredient=update_ingredient,
-                                            cuisine=update_cuisine,
-                                            feedback=feedback_input
-                                            # namespace="your_namespace" # Uncomment if using namespace
-                                        )
-
-                                else:
-                                    print("Invalid match number.")
-                            except ValueError:
-                                print("Invalid input. Please enter a number.")
-                            except Exception as e:
-                                print(f"An error occurred during the update test: {e}")
-
-                    elif search_results and not search_results.matches:
-                         print("\nSearch returned results object, but no matches found for the specified user and query.")
-                    else:
-                        print("\nSearch failed or returned no results object.")
+            # Append the result for this ingredient to the list
+            augmented_prompts_list.append(prompt_augmentation_string)
 
         except Exception as e:
-            print(f"\nAn error occurred during the search process: {e}")
+            print(f"Error processing ingredient '{ingredient}' for user '{user_id_input}': {e}")
+            errors.append(f"Error processing '{ingredient}': {str(e)}")
+            augmented_prompts_list.append(f"Error processing '{ingredient}'")
 
+    # --- Print Final Augmented Prompts ---
+    print("\n--- Generated Augmented Prompts ---")
+    if augmented_prompts_list:
+        # Print each generated prompt on a new line
+        for i, prompt_str in enumerate(augmented_prompts_list):
+            print(f"Prompt for '{ingredient_list_input[i]}':")
+            print(prompt_str)
+            if i < len(augmented_prompts_list) - 1:
+                print("-" * 20) # Separator between prompts
+    else:
+        print("No prompts were generated for any of the ingredients.")
+
+    if errors:
+        print("\n--- Errors Encountered ---")
+        for error_msg in errors:
+            print(error_msg)
 
     print("\nProcess finished.")
 
