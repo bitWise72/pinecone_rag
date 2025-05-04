@@ -53,7 +53,7 @@ jobs:
         run: echo $IMAGE_URI > image_uri_${{ matrix.app }}.txt
 
       - name: Upload Image URI
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: image-uri-${{ matrix.app }}
           path: image_uri_${{ matrix.app }}.txt
@@ -77,7 +77,7 @@ jobs:
           AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
 
       - name: Download Image URI Artifact
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v4
         with:
           name: image-uri-${{ matrix.app }}
 
