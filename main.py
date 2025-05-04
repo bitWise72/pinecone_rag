@@ -62,7 +62,7 @@ def main():
     errors = [] # Collect any errors during processing individual ingredients
 
     # Define the minimum similarity score for this search (adjust as needed)
-    MINIMUM_SIMILARITY_SCORE = 0.7
+    MINIMUM_SIMILARITY_SCORE = 0.6
 
     for i, ingredient in enumerate(ingredient_list_input):
         # Basic validation for each ingredient in the list
@@ -76,7 +76,7 @@ def main():
 
             # Embed the query text for the current ingredient and cuisine
             # Keep the query text broad to find related preferences within the user/cuisine
-            query_text = f"{ingredient} {cuisine_input} cuisine taste"
+            query_text = f"{ingredient} "#{cuisine_input} cuisine taste
             try:
                 # Ensure .tolist() is used ONLY if pinecone_manager.embedder.encode returns a numpy array.
                 query_vector = pinecone_manager.embedder.encode(query_text).tolist()
@@ -104,11 +104,13 @@ def main():
             # --- Process Filtered and Thresholded Matches and Build Prompt ---
             # build_prompt_augmentation expects a list of matches, queried ingredient, AND user servings
             # Get the matches list from the search_results object, handling None/missing attribute
-            filtered_and_thresholded_matches = search_results.matches if search_results and hasattr(search_results, 'matches') and search_results.matches is not None else []
+            thresholded_matches = search_results.matches if search_results and hasattr(search_results, 'matches') and search_results.matches is not None else []
+            sorted_matches = sorted(thresholded_matches, key=lambda x: x['metadata']['feedback_weight'], reverse=True)
+            filtered_and_thresholded_matches= [match for match in sorted_matches if match['score'] >= MINIMUM_SIMILARITY_SCORE]
 
             # Pass the list of matches (already filtered by Pinecone), queried ingredient, and user_servings_int
             # build_prompt_augmentation will use only the top match from filtered_and_thresholded_matches
-            prompt_augmentation_string = build_prompt_augmentation(filtered_and_thresholded_matches, ingredient, servings_input)
+            prompt_augmentation_string = build_prompt_augmentation(filtered_and_thresholded_matches[0], ingredient, servings_input)
 
             # Append the result for this ingredient to the list
             augmented_prompts_list.append(prompt_augmentation_string)

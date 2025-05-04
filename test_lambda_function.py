@@ -58,7 +58,7 @@ def simulate_api_gateway_event(user_id: str, cuisine: str, ingredients: list[str
             'requestId': 'test-request-id',
             'identity': {'sourceIp': '127.0.0.1'},
             'httpMethod': 'POST',
-            'path': '/test/search', # Simulate the full path including stage
+            'path': '/search', # Or whatever path you configure
         },
         # --- FIX MADE HERE: Explicitly set the 'path' key in the event ---
         # This is what your lambda_handler is checking

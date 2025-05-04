@@ -1,0 +1,98 @@
+name: FastAPI Multi-App CI/CD
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  CI:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+    strategy:
+      matrix:
+        app: [add_user_preference, fetch_user_preference, update_user_preference]
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1  # or your region
+
+      - name: Login to Amazon ECR Public
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+        with:
+          registry-type: public
+
+      - name: Ensure Public ECR Repository Exists
+        run: |
+          aws ecr-public describe-repositories --repository-names ${{ matrix.app }} || \
+          aws ecr-public create-repository --repository-name ${{ matrix.app }}
+      
+      - name: Build, Tag, and Push Docker Image to Public ECR
+        env:
+          ECR_REGISTRY: public.ecr.aws/t4j9y0q8  # Replace with your ECR public alias or registry ID
+          ECR_REPOSITORY: ${{ matrix.app }} 
+          IMAGE_TAG: latest
+        run: |
+          IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f Dockerfile.${{ matrix.app }} .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+
+      - name: Upload Image URI Artifact
+        run: echo $IMAGE_URI > image_uri_${{ matrix.app }}.txt
+
+      - name: Upload Image URI
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-uri-${{ matrix.app }}
+          path: image_uri_${{ matrix.app }}.txt
+
+  CD:
+    runs-on: ubuntu-latest
+    needs: [CI]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    strategy:
+      matrix:
+        app: [add_user_preference, fetch_user_preference, update_user_preference]
+
+    steps:
+      - name: Install AWS CLI
+        uses: unfor19/install-aws-cli-action@v1
+        with:
+          version: 1
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_SECRET_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+
+      - name: Download Image URI Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: image-uri-${{ matrix.app }}
+
+      - name: Read Image URI
+        id: image-uri
+        run: echo "IMAGE_URI=$(cat image_uri_${{ matrix.app }}.txt)" >> $GITHUB_ENV
+
+      - name: Deploy to Lambda with Container Image
+        run: |
+          aws lambda update-function-code \
+            --function-name fastapi-${{ matrix.app }} \
+            --image-uri $IMAGE_URI
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_SECRET_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+
+      
