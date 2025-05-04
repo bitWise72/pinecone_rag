@@ -1,0 +1,19 @@
+# Dockerfile.user_service
+
+FROM public.ecr.aws/lambda/python:3.9
+
+# Make shared packages visible to Python
+ENV PYTHONPATH=${LAMBDA_TASK_ROOT}
+
+# Copy everything in project root (apps + shared code + requirements.txt)
+COPY . ${LAMBDA_TASK_ROOT}
+
+# Set working directory to the FastAPI app you are building
+WORKDIR ${LAMBDA_TASK_ROOT}/fetch_user_preference
+
+# Install dependencies from root
+RUN pip install --upgrade pip
+RUN pip install -r ${LAMBDA_TASK_ROOT}/requirements.txt
+
+# Lambda entrypoint (assumes user_service/app.py defines `handler = Mangum(app)`)
+CMD ["app_fetch.handler"]

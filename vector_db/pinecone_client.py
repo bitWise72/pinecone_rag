@@ -146,9 +146,9 @@ class PineconeManager:
             effective_filter["user_id"] = user_id
             print(f"Adding user_id='{user_id}' to filter.")
 
-        if ingredient is not None:
-            effective_filter["ingredient"] = ingredient
-            print(f"Adding ingredient='{ingredient}' to filter.")
+        # if ingredient is not None:
+        #     effective_filter["ingredient"] = ingredient
+        #     print(f"Adding ingredient='{ingredient}' to filter.")
             # Note: If you need case-insensitive ingredient match, you might need to store
             # a lowercased version in metadata or use Pinecone's text matching features if available/suitable.
             # Assuming exact string match for now.

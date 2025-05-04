@@ -57,7 +57,7 @@ def simulate_api_gateway_event(user_id: str, cuisine: str, ingredients: list[str
             'requestId': 'test-request-id',
             'identity': {'sourceIp': '127.0.0.1'},
             'httpMethod': 'POST',
-            'path': '/api/search', # Or whatever path you configure
+            'path': '/search', # Or whatever path you configure
         },
         'isBase64Encoded': False,
         'stageVariables': None
