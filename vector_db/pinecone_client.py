@@ -115,7 +115,8 @@ class PineconeManager:
         """
         Performs a similarity search in the Pinecone index.
         Filters by user_id and ingredient metadata *before* similarity search.
-        Only returns matches with a similarity score at or above min_score.
+        Explicitly filters results to include only matches with a similarity score
+        at or above the specified min_score.
 
         Args:
             query_vector: The vector embedding of the query (list[float]).
@@ -125,18 +126,19 @@ class PineconeManager:
             filter: An optional dictionary for additional metadata filtering.
                     If user_id and ingredient are provided, this filter is combined.
             namespace: The namespace to search within (optional, defaults to "" for default namespace).
-            min_score: Optional minimum similarity score for results. Matches below this score are excluded.
+            min_score: Optional minimum similarity score for results. Matches below this score are explicitly excluded.
 
         Returns:
-            The search results object from Pinecone, or None if an error occurs.
+            A list of search match objects that meet the filter criteria and min_score,
+            or an empty list if no matches are found or an error occurs.
         """
         if not self.index:
             print("Pinecone index not available for search.")
-            return None
+            return [] # Return empty list on failure
 
         if not isinstance(query_vector, list):
              print("Invalid query vector format. Expected list[float].")
-             return None
+             return [] # Return empty list on invalid input
 
         # --- Construct the effective filter ---
         # Combine user_id and ingredient filtering with any additional filter provided
@@ -144,11 +146,11 @@ class PineconeManager:
 
         if user_id is not None:
             effective_filter["user_id"] = user_id
-            print(f"Adding user_id='{user_id}' to filter.")
+            print(f"Adding user_id='{user_id}' to filter.") # Debug print
 
         if ingredient is not None:
             effective_filter["ingredient"] = ingredient
-            print(f"Adding ingredient='{ingredient}' to filter.")
+            print(f"Adding ingredient='{ingredient}' to filter.") # Debug print
             # Note: If you need case-insensitive ingredient match, you might need to store
             # a lowercased version in metadata or use Pinecone's text matching features if available/suitable.
             # Assuming exact string match for now.
@@ -158,21 +160,21 @@ class PineconeManager:
              if effective_filter: # If we already added user_id/ingredient filters
                   # Combine existing filters with the provided filter using $and
                   effective_filter = {"$and": [effective_filter, filter]}
-                  print("Combining user_id/ingredient filter with additional filter.")
+                  print("Combining user_id/ingredient filter with additional filter.") # Debug print
              else:
                   # If no user_id/ingredient filters, just use the provided filter
                   effective_filter = filter
-                  print("Using only the provided filter dictionary.")
+                  print("Using only the provided filter dictionary.") # Debug print
 
         # If effective_filter is still empty, set to None for the query call
         if not effective_filter:
              effective_filter = None
-             print("No filter applied.")
+             print("No filter applied.") # Debug print
 
 
         try:
-            print(f"Performing Pinecone search in index '{PINECONE_INDEX_NAME}' namespace '{namespace}' (top_k={top_k}, min_score={min_score})...")
-            # The filter is applied by Pinecone *before* the similarity search
+            print(f"Performing Pinecone query in index '{PINECONE_INDEX_NAME}' namespace '{namespace}' (top_k={top_k}, min_score={min_score})...")
+            # Pass the min_score to the Pinecone query call
             search_results = self.index.query(
                 namespace=namespace, # Specify the namespace
                 vector=query_vector,
@@ -180,14 +182,32 @@ class PineconeManager:
                 include_values=True,
                 include_metadata=True,
                 filter=effective_filter, # Pass the constructed effective filter here
-                min_score=min_score # Pass the min_score parameter here
+                min_score=min_score # Pass the min_score parameter here (Pinecone should filter, but we'll double check)
             )
-            print("Search complete.")
-            return search_results
+            print("Pinecone query complete.")
+
+            # --- Explicitly filter results by min_score after the query ---
+            # This ensures the threshold is strictly applied, even if Pinecone's min_score
+            # behavior is not exactly as expected in all cases or versions.
+            filtered_matches_by_score = []
+            if search_results and hasattr(search_results, 'matches') and search_results.matches:
+                 for match in search_results.matches:
+                      # Check if min_score is provided AND the match score is below it
+                      if min_score is not None and match.score < min_score:
+                           # Skip this match if its score is below the threshold
+                           continue
+                      # If no min_score is provided, or the score is >= min_score, include the match
+                      filtered_matches_by_score.append(match)
+
+            print(f"Explicitly filtered results by min_score ({min_score if min_score is not None else 'None'}). Found {len(filtered_matches_by_score)} matches meeting criteria.")
+
+            # --- Return the list of filtered matches ---
+            # The calling code (lambda_function.py) expects a list of matches
+            return filtered_matches_by_score
+
         except Exception as e:
             print(f"Error during Pinecone search: {e}")
-            return None
-
+            return []
 
     # Modified update_user_taste_feedback function for similarity search + user filter
     # This version searches by similarity (ingredient+cuisine) within the user's data,

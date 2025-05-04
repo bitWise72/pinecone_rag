@@ -21,6 +21,7 @@ def simulate_api_gateway_event(user_id: str, cuisine: str, ingredients: list[str
     """
     Simulates the structure of an AWS API Gateway Proxy Integration event
     for a POST request with a JSON body, including servings.
+    Specifically simulates a request to the '/test/search' path.
 
     Args:
         user_id: The user ID string.
@@ -53,12 +54,16 @@ def simulate_api_gateway_event(user_id: str, cuisine: str, ingredients: list[str
         'requestContext': { # Minimal request context
             'accountId': '123456789012',
             'resourceId': 'xyz123',
-            'stage': 'test',
+            'stage': 'test', # Simulate the stage name
             'requestId': 'test-request-id',
             'identity': {'sourceIp': '127.0.0.1'},
             'httpMethod': 'POST',
-            'path': '/api/search', # Or whatever path you configure
+            'path': '/test/search', # Simulate the full path including stage
         },
+        # --- FIX MADE HERE: Explicitly set the 'path' key in the event ---
+        # This is what your lambda_handler is checking
+        'path': '/test/search', # Set the path to simulate hitting the search endpoint
+        # --- END FIX ---
         'isBase64Encoded': False,
         'stageVariables': None
     }

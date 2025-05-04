@@ -1,20 +1,16 @@
-# project_root/lambda_function.py
+# project_root/lambda_function.py (or api/search.py)
 import json
 import os
 
 # Import your project modules
 from vector_db.embedder import embedder
 from vector_db.pinecone_client import PineconeManager
+# Import the updated prompt_builder function (expects list of matches and queried ingredient, and user servings)
 from utils.prompt_builder import build_prompt_augmentation
 # config is implicitly available via os.getenv, but can be imported if needed directly
 # from config import ...
 
 # --- Initialize components outside the handler ---
-# This runs once per Lambda execution environment (potentially across multiple invocations)
-# This helps reduce latency on subsequent requests (warm starts)
-# **IMPORTANT:** Large embedding model loading happens here.
-# This can take time and consume memory, leading to cold start latency.
-# Consider alternatives for the embedding model if this is too slow/large.
 pinecone_manager = None
 is_initialized = False
 initialization_error = None
@@ -166,7 +162,8 @@ def lambda_handler(event, context):
                 # --- Call the search method, passing user_id, ingredient, and min_score ---
                 # The search method in PineconeManager should now filter by user_id AND ingredient metadata
                 # and apply the min_score threshold.
-                search_results = pinecone_manager.search(
+                # It returns a list of matches.
+                search_results_list = pinecone_manager.search( # Renamed variable to clarify it's a list
                     query_vector=query_vector,
                     top_k=5, # Retrieve up to 5 matches for this ingredient/user (after filtering/thresholding)
                     user_id=user_id,       # Pass the user_id for filtering
@@ -176,9 +173,25 @@ def lambda_handler(event, context):
                 )
                 # --- End of search call ---
 
+                # --- Debug Print for search_results_list ---
+                print(f"Debug: After pinecone_manager.search for '{ingredient}':")
+                print(f"Debug: Type of search_results_list: {type(search_results_list)}")
+                if isinstance(search_results_list, list):
+                     print(f"Debug: Number of matches found: {len(search_results_list)}")
+                     if search_results_list:
+                          print(f"Debug: First match object preview: {search_results_list[0]}")
+                          # You can print the type of the first element if needed:
+                          # print(f"Debug: Type of first element: {type(search_results_list[0])}")
+                else:
+                     print("Debug: search_results_list is not a list.")
+                # --- End Debug Print ---
+
+
                 # --- Process Filtered and Thresholded Matches and Build Prompt ---
                 # build_prompt_augmentation expects a list of matches, queried ingredient, AND user servings
-                filtered_and_thresholded_matches = search_results.matches if search_results and hasattr(search_results, 'matches') and search_results.matches is not None else []
+                # Pass the list returned by pinecone_manager.search directly
+                filtered_and_thresholded_matches = search_results_list # Use the list directly
+
 
                 # Pass the list of matches (already filtered by Pinecone), queried ingredient, and user_servings_int
                 # build_prompt_augmentation will use only the top match from filtered_and_thresholded_matches
@@ -301,4 +314,3 @@ def lambda_handler(event, context):
             'headers': headers,
             'body': json.dumps({'error': f"Endpoint not found. Supported paths: /search (POST), /update (POST)"})
         }
-

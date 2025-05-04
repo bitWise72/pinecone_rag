@@ -4,7 +4,7 @@ from typing import List, Dict, Any # Import for type hinting
 # We primarily use 'metadata' here.
 
 
-# --- Modified function signature to accept user servings ---
+# --- Function signature accepting filtered matches and queried ingredient ---
 def build_prompt_augmentation(filtered_matches: List[Any], queried_ingredient: str, user_servings: int) -> str:
     """
     Processes a list of filtered Pinecone search matches to create a string
@@ -14,8 +14,9 @@ def build_prompt_augmentation(filtered_matches: List[Any], queried_ingredient: s
 
     Args:
         filtered_matches: A list of Pinecone search match objects, already filtered
-                          to be relevant to the queried ingredient. Expected to have `metadata`.
-                          This function will only use the first match in the list.
+                          to be relevant to the queried ingredient and meeting min_score.
+                          Expected to have `metadata`. This function will only use the
+                          first match in the list.
         queried_ingredient: The specific ingredient string the user queried for.
         user_servings: The desired number of servings provided by the user (integer).
 
@@ -23,13 +24,21 @@ def build_prompt_augmentation(filtered_matches: List[Any], queried_ingredient: s
         A string summarizing the personalized taste preference with scaled amount,
         or a default message if no relevant matches are found.
     """
+    # --- Debug Print for Input ---
+    print(f"Debug: build_prompt_augmentation received filtered_matches: {filtered_matches}")
+    print(f"Debug: build_prompt_augmentation received queried_ingredient: {queried_ingredient}")
+    print(f"Debug: build_prompt_augmentation received user_servings: {user_servings}")
+    # --- End Debug Print ---
+
     # Check if the list of filtered matches is empty
+    # This check should now be accurate based on the input list
     if not filtered_matches:
         # Return a message indicating no specific preferences were found for the user
         # related to the queried ingredient itself.
         return f"No specific taste preferences found in history for '{queried_ingredient}'."
 
     # --- Take only the single top match (the first item in the list) ---
+    # This assumes filtered_matches is not empty due to the check above
     top_match = filtered_matches[0]
     metadata = top_match.metadata
 
@@ -44,7 +53,7 @@ def build_prompt_augmentation(filtered_matches: List[Any], queried_ingredient: s
 
     # --- Calculate Adjusted Amount based on Servings ---
     adjusted_amount = None
-    scaling_factor = None
+    # Ensure database_amount and database_servings are valid numbers and servings > 0
     if database_amount is not None and database_servings is not None and isinstance(database_amount, (int, float)) and isinstance(database_servings, (int, float)) and database_servings > 0:
         try:
             # Calculate the scaling factor
@@ -58,8 +67,7 @@ def build_prompt_augmentation(filtered_matches: List[Any], queried_ingredient: s
             # If calculation fails, adjusted_amount remains None
 
     # --- Phrasing focused on the single top preference with SCALED amount ---
-    # Example: "For 'chicken', based on a past preference (500g for 4 servings), the recommended amount for 6 servings is 750g in indian_curry_style cuisine (score: 0.85, weight: 2.5)."
-    phrase_parts = [f"For '{queried_ingredient}',"]
+    phrase_parts = [f"For '{ingredient}',"]
 
     if adjusted_amount is not None:
         # Use the adjusted amount if calculation was successful
